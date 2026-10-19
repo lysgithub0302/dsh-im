@@ -101,7 +101,14 @@ export class WecomRuntime {
     await atConnectionStage('harness.check', () => this.#harness.ensureRunning());
     this.#status.harnessReachable = true;
 
-    const silentSdkLogger = { debug() {}, info() {}, warn() {}, error() {} };
+    // The SDK's own logger reports reply ack errors (errcode/errmsg) that are
+    // invisible otherwise; keep debug/info quiet but surface warn/error.
+    const silentSdkLogger = {
+      debug() {},
+      info() {},
+      warn: (...args) => this.#logger.warn?.('[dsh-im:wecom-sdk]', ...args),
+      error: (...args) => this.#logger.error?.('[dsh-im:wecom-sdk]', ...args),
+    };
     const client = this.#createClient({
       botId: this.#config.remoteBotId,
       secret: this.#secret,

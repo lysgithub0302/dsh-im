@@ -1865,10 +1865,15 @@ export class HarnessClient {
         progressTail = progressTail
           .then(() => onUpdate(update))
           .catch((error) => {
+            // The WeCom SDK rejects with the raw ack frame (no .message), so
+            // surface errcode/errmsg explicitly instead of printing undefined.
+            const detail = error instanceof Error
+              ? error.message
+              : `${error?.errmsg ?? error?.body?.errmsg ?? '(no message)'} (errcode=${error?.errcode ?? error?.body?.errcode ?? 'unknown'})`;
             console.warn(
               '[dsh-im] ignored a progress update failure:',
               this.#logPrefix,
-              error.message,
+              detail,
             );
           });
       }
