@@ -160,3 +160,102 @@ test('supervisor probes silent stretches with a light refresh', async () => {
     supervisor.stop();
   }
 });
+
+test('final delivery waits for an in-flight rotation and lands on the new card', async () => {
+  const client = createMockClient();
+  let releaseClosing;
+  const closingHeld = new Promise((resolve) => { releaseClosing = resolve; });
+  client.onBehavior(({ op, streamId, finish }) => {
+    // Hold the rotation's closing reply of the first card.
+    if (op === 'replyStream' && finish && streamId === 'stream-1') return closingHeld.then(() => undefined);
+    return undefined;
+  });
+  const supervisor = createWecomStreamSupervisor(
+    baseOptions(client, { rotateAfterMs: 0, tickMs: 10_000 }),
+  );
+  supervisor.start('stream-1');
+  const rotating = supervisor.progress('step 5 of 9');
+  await sleep(20);
+  const finishing = supervisor.finishStream('FINAL ANSWER');
+  await sleep(20);
+  releaseClosing();
+  await Promise.all([rotating, finishing]);
+  try {
+    const opens = client.calls.filter((call) => call.op === 'replyStream' && !call.finish);
+    const final = client.calls.filter((call) => call.op === 'replyStream' && call.finish && call.text === 'FINAL ANSWER');
+    assert.equal(opens.length, 1, 'exactly one new card opened');
+    assert.equal(final.length, 1, 'final answer delivered exactly once');
+    assert.equal(final[0].streamId, opens[0].streamId, 'final answer went to the rotated card, not the closed one');
+    assert.notEqual(final[0].streamId, 'stream-1');
+  } finally {
+    supervisor.stop();
+  }
+});
+
+test('stop during an in-flight rotation leaves no unfinished continuation card', async () => {
+  const client = createMockClient();
+  let releaseClosing;
+  const closingHeld = new Promise((resolve) => { releaseClosing = resolve; });
+  client.onBehavior(({ op, streamId, finish }) => {
+    if (op === 'replyStream' && finish && streamId === 'stream-1') {
+      return closingHeld.then(() => undefined);
+    }
+    return undefined;
+  });
+  const supervisor = createWecomStreamSupervisor(
+    baseOptions(client, { rotateAfterMs: 0, tickMs: 10_000 }),
+  );
+  supervisor.start('stream-1');
+  const rotating = supervisor.progress('step 2 of 4');
+  await sleep(20);
+  supervisor.stop();
+  releaseClosing();
+  await rotating;
+  const opens = client.calls.filter((call) => call.op === 'replyStream' && !call.finish);
+  assert.equal(opens.length, 0, 'no continuation card is opened after shutdown');
+  assert.equal(supervisor.isAlive(), false);
+});
+
+test('finalization is terminal: background supervision stops once the final finish is sent', async () => {
+  const client = createMockClient();
+  const supervisor = createWecomStreamSupervisor(
+    baseOptions(client, { rotateAfterMs: 40, silentProbeMs: 20, tickMs: 10 }),
+  );
+  supervisor.start('stream-1');
+  await sleep(30); // probes may already fire before finalization
+  await supervisor.finishStream('done');
+  assert.equal(supervisor.isDelivering(), true);
+  const callsAtFinal = client.calls.length;
+  await sleep(200); // many ticks would fire here without the terminal state
+  try {
+    assert.equal(client.calls.length, callsAtFinal, 'no probe or rotation after finalization');
+    const final = client.calls.filter((call) => call.op === 'replyStream' && call.finish);
+    assert.equal(final.length, 1, 'the card carries exactly one finish');
+  } finally {
+    supervisor.stop();
+  }
+});
+
+test('a failed final finish still stops supervision and rejects for the caller', async () => {
+  const client = createMockClient();
+  client.onBehavior(({ op, finish }) => {
+    if (op === 'replyStream' && finish) {
+      return { errcode: 846608, errmsg: 'stream message update expired (>10 minutes), cannot update' };
+    }
+    return undefined;
+  });
+  const supervisor = createWecomStreamSupervisor(
+    baseOptions(client, { rotateAfterMs: 10_000, silentProbeMs: 10_000, tickMs: 10 }),
+  );
+  supervisor.start('stream-1');
+  await sleep(20);
+  await assert.rejects(() => supervisor.finishStream('final answer'));
+  const callsAtFailure = client.calls.length;
+  await sleep(120);
+  try {
+    assert.equal(client.calls.length, callsAtFailure, 'supervision stops after a failed finalization');
+    assert.equal(supervisor.isDelivering(), true);
+  } finally {
+    supervisor.stop();
+  }
+});
