@@ -1,4 +1,5 @@
 import { GroupHistorySettings } from './group-history-settings.js';
+import { SidebarSettings } from './sidebar-settings.js';
 import * as React from 'react';
 
 import {
@@ -433,6 +434,6 @@ export function GlobalSettingsPanel({ rpcCall }) {
           },
         }, item.label)))),
     tab === 'general' ? h('div', { id: 'dim-general-settings-panel-general', className: 'dim-generalSettingsTabPanel', role: 'tabpanel',
-      'aria-labelledby': 'dim-general-settings-tab-general' }, h(GroupHistorySettings, { rpcCall }))
+      'aria-labelledby': 'dim-general-settings-tab-general' }, h(SidebarSettings, { rpcCall }), h(GroupHistorySettings, { rpcCall }))
       : h(AttachmentSettingsPanel, { rpcCall }));
 }

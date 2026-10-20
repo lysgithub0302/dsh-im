@@ -5,6 +5,7 @@ import React from 'react';
 import TestRenderer from 'react-test-renderer';
 import { en } from '../plugin-src/client/i18n.js';
 import { IM_MAIN_PANEL_ID, installImPluginPage } from '../plugin-src/client/plugin-page.js';
+import { apply as applyClient } from '../plugin-src/client/index.js';
 
 const { act, create } = TestRenderer;
 const packageName = '@xmanrui/dsh-im';
@@ -12,7 +13,7 @@ const bundle = { kind: 'bundle', pkg: { name: packageName } };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 function slotLedger(ready) {
-  const declarations = new Set(ready ? ['main', 'plugins.detail.actions', 'sidebar.panellist'] : []);
+  const declarations = new Set(ready ? ['main', 'plugins.detail.actions', 'sidebar.panellist', 'settings.section'] : []);
   const entries = new Map();
   const waiting = new Set();
   return {
@@ -43,19 +44,21 @@ function slotLedger(ready) {
   };
 }
 
-async function start(t, { ready = true } = {}) {
+async function start(t, { ready = true, sidebarVisible = true } = {}) {
   const root = new Context();
   const slots = slotLedger(ready);
   const selected = [];
   const opened = [];
   let renders = 0;
+  let visibility;
   root.provide('slots', slots);
   root.provide('locale', { bind: () => (key) => key });
   const plugin = root.plugin({
     name: 'test-plugin-page',
     apply(ctx) {
-      installImPluginPage(ctx, {
+      visibility = installImPluginPage(ctx, {
         packageName,
+        sidebarVisible,
         renderPanel: () => { renders++; return React.createElement('p', null, 'Shared IM panel'); },
       });
     },
@@ -68,6 +71,7 @@ async function start(t, { ready = true } = {}) {
   await plugin.await();
   return {
     slots, selected, opened, plugin,
+    setSidebarVisible: (value) => visibility.setSidebarVisible(value),
     get renders() { return renders; },
     async provideNavigation() {
       const provider = root.plugin({
@@ -115,6 +119,38 @@ test('detail action opens the shared IM panel and returns to this plugin in both
   assert.equal(back.children.at(-1), 'Back to plugin details');
   act(() => back.props.onClick());
   assert.deepEqual(host.opened, [packageName]);
+});
+
+test('sidebar toggling preserves other entries and cancels pending registrations', async (t) => {
+  const host = await start(t, { sidebarVisible: false });
+  host.setSidebarVisible(false);
+  const navigation = await host.provideNavigation();
+  assert.equal(host.slots.entries.size, 2);
+  for (let i = 0; i < 3; i++) {
+    host.setSidebarVisible(true);
+    host.setSidebarVisible(true);
+    assert.equal(host.slots.entries.size, 3);
+    host.setSidebarVisible(false);
+    host.setSidebarVisible(false);
+    assert.equal(host.slots.entries.size, 2);
+  }
+  host.slots.declare('sidebar.panellist', false);
+  host.setSidebarVisible(true);
+  host.setSidebarVisible(false);
+  host.slots.declare('sidebar.panellist', true);
+  assert.equal(host.slots.entries.size, 2);
+  host.slots.declare('main', false);
+  host.slots.declare('main', true);
+  assert.equal(host.slots.entries.size, 2);
+  await navigation.dispose();
+  host.setSidebarVisible(true);
+  await host.provideNavigation();
+  assert.equal(host.slots.entries.size, 3);
+  host.setSidebarVisible(false);
+  await host.plugin.dispose();
+  host.setSidebarVisible(true);
+  assert.equal(host.slots.entries.size, 0);
+  assert.equal(host.slots.waiting.size, 0);
 });
 
 test('the action is limited to dsh-im bundle and component details', async (t) => {
@@ -190,4 +226,54 @@ test('slot withdrawal and plugin disposal cancel active registrations and pendin
   host.slots.declare('plugins.detail.actions', true);
   assert.equal(host.slots.entries.size, 0);
   assert.equal(host.slots.waiting.size, 0);
+});
+
+test('client startup waits for configuration before showing the sidebar', async (t) => {
+  for (const [scenario, initial, visible] of [
+    ['configured auto', { ok: true, value: { mode: 'auto', visible: false } }, false],
+    ['zero channels', { ok: true, value: { mode: 'auto', visible: true } }, true],
+    ['always show', { ok: true, value: { mode: 'show', visible: true } }, true],
+    ['always hide', { ok: true, value: { mode: 'hide', visible: false } }, false],
+    ['unavailable Host', { ok: false, error: { message: 'unavailable' } }, false],
+  ]) await t.test(scenario, async (t) => {
+    const root = new Context();
+    const slots = slotLedger(true);
+    let finishInitial;
+    const calls = [];
+    root.provide('slots', slots);
+    root.provide('locale', { register: () => () => {}, bind: () => (key) => key });
+    root.provide('workspaces', {});
+    root.provide('layout', { selectPanel() {} });
+    root.provide('pluginNavigation', { openBundle() {} });
+    root.provide('connection', { rpc: { call: async (_path, _channel, { method, payload }) => {
+      calls.push({ channel: _channel, method });
+      if (method === 'settings.sidebar-entry.get') return new Promise((resolve) => { finishInitial = resolve; });
+      if (method === 'settings.sidebar-entry.set') return { ok: true, value: { mode: payload.mode, visible: payload.mode === 'show' } };
+      return { ok: true, value: {} };
+    } } });
+    const plugin = root.plugin({ name: 'test-client-sidebar', apply: applyClient });
+    t.after(() => plugin.dispose());
+    await plugin.await();
+    await flush();
+    assert.equal(slots.entries.size, 3, 'only main, plugin details and settings are registered while loading');
+    assert.equal(slots.entries.has('sidebar.panellist'), false);
+    assert.equal([...slots.waiting].some((item) => item.name === 'sidebar.panellist'), false,
+      'loading must not enqueue a sidebar registration that could flash when the slot arrives');
+    finishInitial(initial);
+    await flush();
+    assert.equal(slots.entries.has('sidebar.panellist'), visible);
+    assert.equal(slots.entries.size, visible ? 4 : 3);
+    const { globalSettingsRpcCall } = slots.entries.get('settings.section').options.inject();
+    await globalSettingsRpcCall('settings.sidebar-entry.set', { mode: 'show' });
+    assert.equal(slots.entries.size, 4);
+    await globalSettingsRpcCall('settings.sidebar-entry.set', { mode: 'hide' });
+    assert.equal(slots.entries.size, 3);
+    assert.ok(calls.filter(({ method }) => method.startsWith('settings.sidebar-entry.'))
+      .every(({ channel }) => channel === 'dsh-im/dsh-im-sidebar'));
+    await globalSettingsRpcCall('settings.group-history.get', {});
+    assert.deepEqual(calls.at(-1), { channel: 'dsh-im/dsh-im-settings', method: 'settings.group-history.get' });
+    await plugin.dispose();
+    assert.equal(slots.entries.size, 0);
+    assert.equal(slots.waiting.size, 0);
+  });
 });

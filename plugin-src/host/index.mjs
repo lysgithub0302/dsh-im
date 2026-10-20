@@ -20,6 +20,7 @@ import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
+import { installSidebarSettingsRpc } from './sidebar-settings.mjs';
 import { installInjectedContext } from './injected-context.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
 import { installSessionTitlePrefix } from './session-title-prefix.mjs';
@@ -45,6 +46,7 @@ export function createImHostPlugin(internals = {}) {
   const startHostLanguageRpc = internals.installHostLanguageRpc ?? installHostLanguageRpc;
   const startUpdate = internals.installUpdateRpc ?? installUpdateRpc;
   const startInboundTtl = internals.installInboundTtlRpc ?? installInboundTtlRpc;
+  const startSidebarSettings = internals.installSidebarSettingsRpc ?? installSidebarSettingsRpc;
   const startInjectedContext = internals.installInjectedContext ?? installInjectedContext;
   const startDelivery = internals.installDeliveryRpc ?? installDeliveryRpc;
   const startDeliveryHttp = internals.installDeliveryHttp ?? installDeliveryHttp;
@@ -174,6 +176,11 @@ export function createImHostPlugin(internals = {}) {
         startUpdate(ctx);
       } catch (error) {
         logger.error?.('[dsh-im] failed to activate update management; continuing with channels', error);
+      }
+      try {
+        startSidebarSettings(ctx, { config });
+      } catch (error) {
+        logger.error?.('[dsh-im] failed to activate sidebar settings; continuing with channels', error);
       }
       try {
         startInboundTtl(ctx, { config });

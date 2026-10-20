@@ -646,6 +646,14 @@ const CSS = String.raw`
 .dim-botGeneralControl { position: relative; min-width: 0; max-width: 100%; justify-self: end; color: var(--dsw-alias-label-primary, #1f2329); }
 .dim-botGeneralControl select, .dim-groupHistoryInput { display: block; min-width: 104px; max-width: 100%; height: 36px; padding: 0 36px 0 14px; border: 0; border-radius: 10px; color: inherit; background: var(--dsw-alias-bg-module-platform, #f5f6f7); font: inherit; font-size: 14px; line-height: 22px; appearance: none; }
 .dim-botGeneralControl select { cursor: pointer; }
+.dim-sidebarSettings { border-bottom: 1px solid var(--dsw-alias-border-l2, #dfe1e5); }
+.dim-sidebarSettings .dim-botGeneralRow { border-bottom: 0; }
+.dim-sidebarHeading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.dim-sidebarFeedback { display: flex; align-items: center; gap: 12px; padding-bottom: 16px; }
+.dim-sidebarFeedback .dim-accessFeedback { flex: 1; min-width: 0; }
+/* Native option popups do not inherit the select's painted background on
+   Windows. Set both colors so dark Host text never lands on a light popup. */
+.dim-sidebarSelect option { color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-3, #fff); }
 .dim-botGeneralControl select:hover:not(:disabled), .dim-groupHistoryInput:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, #eef0f3); }
 .dim-botGeneralControl select:focus-visible, .dim-groupHistoryInput:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 2px; }
 .dim-botGeneralControl select:disabled, .dim-groupHistoryInput:disabled { opacity: .5; cursor: not-allowed; }

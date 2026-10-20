@@ -84,6 +84,7 @@ import { UpdatePanel, UPDATE_RPC_CHANNEL } from './update-panel.js';
 import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 import { IMPanelErrorBoundary } from './panel-error-boundary.js';
 import { installImPluginPage } from './plugin-page.js';
+import { installSidebarVisibilitySync, SIDEBAR_SETTINGS_ENDPOINTS, SIDEBAR_SETTINGS_RPC_CHANNEL } from './sidebar-settings.js';
 
 export const name = 'im-settings';
 export const inject = ['slots', 'connection', 'locale', 'workspaces'];
@@ -492,40 +493,50 @@ export function apply(ctx) {
     };
   }, 'im-settings: install combined channel styles');
 
+  let sidebarSync;
+  const managementRpc = async (connection, channel, endpoint, payload, signal) => {
+    const result = await callManagementRpc(connection, channel, endpoint, payload, signal);
+    if (result?.ok === true) {
+      if (endpoint === SIDEBAR_SETTINGS_ENDPOINTS.set) sidebarSync?.apply(result);
+      else if (endpoint !== SIDEBAR_SETTINGS_ENDPOINTS.get) sidebarSync?.refresh();
+    }
+    return result;
+  };
   const feishuRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, FEISHU_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, FEISHU_RPC_CHANNEL, endpoint, payload, signal);
   const weixinRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, WEIXIN_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, WEIXIN_RPC_CHANNEL, endpoint, payload, signal);
   const dingtalkRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, DINGTALK_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, DINGTALK_RPC_CHANNEL, endpoint, payload, signal);
   const qqRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, QQ_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, QQ_RPC_CHANNEL, endpoint, payload, signal);
   const wecomRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, WECOM_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, WECOM_RPC_CHANNEL, endpoint, payload, signal);
   const wecomAppRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, WECOM_APP_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, WECOM_APP_RPC_CHANNEL, endpoint, payload, signal);
   const telegramRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, TELEGRAM_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, TELEGRAM_RPC_CHANNEL, endpoint, payload, signal);
   const discordRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, DISCORD_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, DISCORD_RPC_CHANNEL, endpoint, payload, signal);
   const whatsappRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
   const imessageRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, IMESSAGE_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, IMESSAGE_RPC_CHANNEL, endpoint, payload, signal);
   const emailRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, EMAIL_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, EMAIL_RPC_CHANNEL, endpoint, payload, signal);
   const matrixRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, MATRIX_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, MATRIX_RPC_CHANNEL, endpoint, payload, signal);
   const slackRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, SLACK_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, SLACK_RPC_CHANNEL, endpoint, payload, signal);
   const officeRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, OFFICE_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, OFFICE_RPC_CHANNEL, endpoint, payload, signal);
   const updateRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, UPDATE_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, UPDATE_RPC_CHANNEL, endpoint, payload, signal);
   const deliveryRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, DELIVERY_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, DELIVERY_RPC_CHANNEL, endpoint, payload, signal);
   const globalSettingsRpcCall = (endpoint, payload, signal) =>
-    callManagementRpc(ctx.connection, GLOBAL_SETTINGS_RPC_CHANNEL, endpoint, payload, signal);
+    managementRpc(ctx.connection, Object.values(SIDEBAR_SETTINGS_ENDPOINTS).includes(endpoint)
+      ? SIDEBAR_SETTINGS_RPC_CHANNEL : GLOBAL_SETTINGS_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) =>
       callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),
@@ -567,10 +578,19 @@ export function apply(ctx) {
     preferredSectionId: props.preferredSectionId,
   });
 
-  installImPluginPage(ctx, {
+  const pluginPage = installImPluginPage(ctx, {
     packageName: manifest.name,
     renderPanel: buildPanelElement,
   });
+
+  ctx.effect(() => {
+    sidebarSync = installSidebarVisibilitySync({
+      rpcCall: (endpoint, payload, signal) =>
+        callManagementRpc(ctx.connection, SIDEBAR_SETTINGS_RPC_CHANNEL, endpoint, payload, signal),
+      setVisible: (visible) => pluginPage.setSidebarVisible(visible),
+    });
+    return () => { sidebarSync.dispose(); sidebarSync = null; };
+  }, 'im-settings: sidebar visibility');
 
   ctx.effect(() => {
     let disposed = false;

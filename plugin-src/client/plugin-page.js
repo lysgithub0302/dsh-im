@@ -34,8 +34,19 @@ function ImSidebarIcon({ size }) {
 
 // Optional services and slots keep the existing settings entry working on
 // older DSH versions. Reuse the same panel through public navigation APIs.
-export function installImPluginPage(ctx, { packageName, renderPanel }) {
-  if (typeof ctx.inject !== 'function') return;
+export function installImPluginPage(ctx, { packageName, renderPanel, sidebarVisible = false }) {
+  // Wait for the Host's saved preference before adding a navigation row. An
+  // optimistic show would briefly shift the sidebar on every configured start.
+  let visible = sidebarVisible;
+  let updateSidebar = null;
+  const controller = {
+    setSidebarVisible(value) {
+      if (typeof value !== 'boolean') throw new TypeError('visible must be a boolean');
+      visible = value;
+      updateSidebar?.();
+    },
+  };
+  if (typeof ctx.inject !== 'function') return controller;
   ctx.inject(['layout', 'pluginNavigation'], (pageCtx) =>
     pageCtx.slots.inject('main', () => {
       const unregisterPage = pageCtx.slots.register({
@@ -45,12 +56,26 @@ export function installImPluginPage(ctx, { packageName, renderPanel }) {
           onBack: () => pageCtx.pluginNavigation.openBundle(packageName),
         }),
       }, ImPluginPage);
-      const stopSidebar = pageCtx.slots.inject('sidebar.panellist', () =>
-        pageCtx.slots.register({
-          name: 'sidebar.panellist', id: IM_MAIN_PANEL_ID,
-          order: 10, label: () => pageCtx.locale.bind(IM_LOCALE_NAMESPACE)('IM机器人'),
-          locale: IM_LOCALE_NAMESPACE,
-        }, ImSidebarIcon));
+      let stopSidebar = null;
+      const update = () => {
+        if (visible === (stopSidebar !== null)) return;
+        if (!visible) {
+          const stop = stopSidebar;
+          stopSidebar = null;
+          stop();
+          return;
+        }
+        // Own the slot subscription, including late declarations, so toggling
+        // cannot leave a pending registration or add a duplicate entry.
+        stopSidebar = pageCtx.slots.inject('sidebar.panellist', () =>
+          pageCtx.slots.register({
+            name: 'sidebar.panellist', id: IM_MAIN_PANEL_ID,
+            order: 10, label: () => pageCtx.locale.bind(IM_LOCALE_NAMESPACE)('IM机器人'),
+            locale: IM_LOCALE_NAMESPACE,
+          }, ImSidebarIcon));
+      };
+      updateSidebar = update;
+      update();
       const stopActions = pageCtx.slots.inject('plugins.detail.actions', () =>
         pageCtx.slots.register({
           name: 'plugins.detail.actions', id: 'xmanrui-dsh-im-open',
@@ -62,8 +87,10 @@ export function installImPluginPage(ctx, { packageName, renderPanel }) {
         }, OpenImAction));
       return () => {
         stopActions();
-        stopSidebar();
+        updateSidebar = null;
+        stopSidebar?.();
         unregisterPage();
       };
     }));
+  return controller;
 }
