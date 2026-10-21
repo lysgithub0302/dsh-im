@@ -20,6 +20,13 @@ const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'failed', 'cancelled', 'ex
 // skipping the bot on every supervisor pass. A 'connecting' status whose last
 // transition is older than this grace is treated as stalled and restarted.
 const STALLED_CONNECTING_GRACE_MS = 120_000;
+// Two deployments holding the same credential keep kicking each other, and
+// every restart authenticates successfully (so failure-based backoff never
+// triggers) while only surviving one reconnect cycle. A connection that
+// dropped again within this window of being established counts as short-lived
+// and its restarts are paced; a connection that stays healthy this long
+// proves the bot is not in a kick loop and clears the pacing.
+const STABLE_CONNECTION_MS = 300_000;
 // Automatic restarts are paced per bot: when the same credential is held by
 // another connection, each side kicks the other, and restarting at supervisor
 // cadence would storm the provider and fight the legitimate holder.
@@ -110,11 +117,27 @@ export class WecomController {
     for (const config of this.#configStore.list()) {
       await this.#withBotTransition(config.botId, async () => {
         const existing = this.#runtimes.get(config.botId)?.status;
-        if (this.#closed || existing?.ready) return;
+        if (this.#closed || existing?.ready) {
+          // A single successful authenticate does not prove the bot is back
+          // for good: in a kick loop every restart authenticates and is
+          // dropped again one cycle later. Only a connection that has now
+          // held healthy past the stability window clears the pacing.
+          if (existing?.ready && this.#connectionStable(existing)) this.#restartBackoff.delete(config.botId);
+          return;
+        }
         if (existing?.wecomConnectionState === 'connecting' && !this.#stalledConnecting(existing)) return;
+        const stalled = this.#stalledConnecting(existing);
+        const shortLived = stalled && this.#shortLivedConnecting(existing);
         const backoff = this.#restartBackoff.get(config.botId);
         if (backoff && backoff.nextAttemptAt > this.#now()) return;
-        const stalled = this.#stalledConnecting(existing);
+        if (shortLived && !backoff) {
+          // First short-lived drop: schedule one pacing window before
+          // contending for the credential again, instead of grabbing it back
+          // at supervisor cadence and immediately kicking the other side.
+          this.#scheduleRestartBackoff(config.botId);
+          this.#logger.warn?.(`[dsh-im:wecom] bot ${config.botId} connection was short-lived; deferring reconnect`);
+          return;
+        }
         try {
           const secret = await this.#resolveSecret(config.secretRef);
           if (!secret) {
@@ -122,6 +145,12 @@ export class WecomController {
             return;
           }
           if (stalled) {
+            if (shortLived) {
+              // The pacing window has elapsed; contend again. The schedule
+              // above doubles the next window first, so a renewed kick loop
+              // slows down instead of cycling at supervisor cadence.
+              this.#scheduleRestartBackoff(config.botId);
+            }
             this.#logger.warn?.(`[dsh-im:wecom] bot ${config.botId} connection stalled in 'connecting'; restarting`);
           }
           await this.#startRuntime(config, secret);
@@ -142,6 +171,24 @@ export class WecomController {
     if (status?.wecomConnectionState !== 'connecting') return false;
     const { lastCheckedAt } = status;
     return typeof lastCheckedAt === 'number' && this.#now() - lastCheckedAt > STALLED_CONNECTING_GRACE_MS;
+  }
+
+  // Whether the connection that just went silent had been established for
+  // less than the stability window: the signature of a credential contested
+  // by another deployment, as opposed to an ordinary healthy connection that
+  // dropped. Based on the timestamps of the drop (lastCheckedAt) and of the
+  // last successful authenticate (lastConnectedAt), so it does not change as
+  // time passes without a new connection.
+  #shortLivedConnecting(status) {
+    const { lastCheckedAt, lastConnectedAt } = status ?? {};
+    return typeof lastCheckedAt === 'number' && typeof lastConnectedAt === 'number'
+      && lastCheckedAt > lastConnectedAt
+      && lastCheckedAt - lastConnectedAt < STABLE_CONNECTION_MS;
+  }
+
+  #connectionStable(status) {
+    const { lastConnectedAt } = status ?? {};
+    return typeof lastConnectedAt === 'number' && this.#now() - lastConnectedAt >= STABLE_CONNECTION_MS;
   }
 
   #scheduleRestartBackoff(botId) {
@@ -534,7 +581,6 @@ export class WecomController {
     this.#runtimes.set(config.botId, runtime);
     try {
       await runtime.start();
-      this.#restartBackoff.delete(config.botId);
     } catch (error) {
       await runtime.stop().catch(() => undefined);
       this.#runtimes.delete(config.botId);
