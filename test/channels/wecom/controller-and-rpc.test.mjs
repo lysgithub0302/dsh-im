@@ -207,3 +207,119 @@ test('Enterprise WeChat reconnect optionally sends a test message without changi
     botId: 'wecom_bot', sendTest: false,
   })).ok, false);
 });
+
+function stalledControllerHarness(options = {}) {
+  const configs = [{
+    botId: 'wecom_bot', remoteBotId: 'remote-bot', secretRef: 'wecom-secret-ref',
+  }];
+  const state = {
+    created: 0,
+    stopped: 0,
+    started: 0,
+    resolved: 0,
+    failStarts: 0,
+    status: { ready: false, wecomConnectionState: 'connecting', lastCheckedAt: null },
+    now: options.now ?? Date.now(),
+  };
+  const controller = new WecomController({
+    qrAuth: { start: async () => ({}), poll: async () => ({ status: 'waiting' }) },
+    credentials: {
+      resolve: async () => { state.resolved += 1; return { value: 'private-secret' }; },
+      set: async () => {},
+      unset: async () => {},
+    },
+    configStore: {
+      list: () => [...configs],
+      get: (id) => configs.find((value) => value.botId === id) ?? null,
+      getByRemoteBotId: (id) => configs.find((value) => value.remoteBotId === id) ?? null,
+      save: async () => {},
+      remove: async () => null,
+    },
+    createRuntime: async () => {
+      state.created += 1;
+      return {
+        get status() { return structuredClone(state.status); },
+        start: async () => {
+          state.started += 1;
+          if (state.failStarts > 0) {
+            state.failStarts -= 1;
+            throw new Error('connect timeout');
+          }
+          state.status = {
+            ready: true, wecomConnectionState: 'connected', harnessReachable: true,
+            lastCheckedAt: state.now,
+          };
+        },
+        stop: async () => { state.stopped += 1; },
+      };
+    },
+    nowImpl: () => state.now,
+    logger: { warn: () => {}, error: () => {} },
+  });
+  return { controller, state };
+}
+
+/** Simulates the SDK dropping a live connection: the runtime the controller
+ * already started flips to 'connecting' and then emits nothing further. */
+function dropToConnecting(state, { stalled = false } = {}) {
+  state.status = {
+    ready: false, wecomConnectionState: 'connecting',
+    lastCheckedAt: stalled ? state.now - 10 * 60_000 : state.now,
+  };
+}
+
+test('initialize() keeps waiting while a runtime is actively connecting', async () => {
+  const { controller, state } = stalledControllerHarness();
+  await controller.initialize();
+  assert.equal(state.created, 1);
+  dropToConnecting(state);
+  await controller.initialize();
+  assert.equal(state.created, 1, 'fresh connecting runtime must not be restarted');
+  assert.equal(state.resolved, 1);
+});
+
+test('initialize() restarts a runtime stalled in connecting after the grace window', async () => {
+  const { controller, state } = stalledControllerHarness();
+  await controller.initialize();
+  assert.equal(state.created, 1);
+  dropToConnecting(state, { stalled: true });
+  const before = controller.status().revision;
+  await controller.initialize();
+  assert.equal(state.created, 2, 'stalled connecting runtime is restarted');
+  assert.equal(state.stopped, 1, 'the zombie runtime is stopped');
+  assert.equal(controller.status().bots[0].connected, true);
+  assert.ok(controller.status().revision > before);
+});
+
+test('failed automatic restarts back off per bot and reset after success', async () => {
+  const { controller, state } = stalledControllerHarness();
+  await controller.initialize();
+  dropToConnecting(state, { stalled: true });
+  state.failStarts = 2;
+
+  await controller.initialize();
+  assert.equal(state.created, 2);
+  assert.equal(controller.status().bots[0].state, 'error');
+
+  state.now += 1_000;
+  await controller.initialize();
+  assert.equal(state.created, 2, 'restart is skipped while backoff is pending');
+
+  state.now += 60_000;
+  await controller.initialize();
+  assert.equal(state.created, 3, 'restart retries once the first backoff expires');
+
+  state.now += 1_000;
+  await controller.initialize();
+  assert.equal(state.created, 3, 'second backoff (2x) is respected');
+
+  state.now += 120_000;
+  dropToConnecting(state, { stalled: true });
+  await controller.initialize();
+  assert.equal(state.created, 4, 'third attempt succeeds');
+  assert.equal(controller.status().bots[0].connected, true);
+
+  dropToConnecting(state, { stalled: true });
+  await controller.initialize();
+  assert.equal(state.created, 5, 'backoff is cleared after a successful start');
+});
